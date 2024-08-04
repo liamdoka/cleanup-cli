@@ -3,6 +3,7 @@ const stdout = std.io.getStdOut().writer();
 const test_allocator = std.testing.allocator;
 const Allocator = std.mem.Allocator;
 const expect = std.testing.expect;
+const eql = std.mem.eql;
 
 const Command = struct {
     command: ?[]const u8,
@@ -22,6 +23,45 @@ const Command = struct {
 
 const Flag = struct { head: []const u8, tail: ?[]const u8 };
 
+const Config = struct {
+    dryRun: bool = undefined,
+    recursive: bool = undefined,
+    force: bool = undefined,
+    patch: bool = undefined,
+    magic: bool = undefined,
+
+    directory: []const u8 = undefined,
+
+    fn fromCommand(self: *Config, command: *Command) !void {
+        self.directory = command.command.?;
+
+        for (command.flags.items) |flag| {
+            // Cannot switch on strings -> should probably start from the beginning and add flags as chars
+            //     switch (flag.head) {
+            //         "dry-run", "d" => self.dryRun = true,
+            //         "recursive", "r" => self.recursive = true,
+            //         "force", "f" => self.force = true,
+            //         "patch", "p" => self.patch = true,
+            //         "magic", "m" => self.magic = true,
+            //     }
+            if (eql(u8, flag.head, "d") or eql(u8, flag.head, "dry-run")) {
+                self.dryRun = true;
+            } else if (eql(u8, flag.head, "r") or eql(u8, flag.head, "recursive")) {
+                self.recursive = true;
+            } else if (eql(u8, flag.head, "f") or eql(u8, flag.head, "force")) {
+                self.force = true;
+            } else if (eql(u8, flag.head, "p") or eql(u8, flag.head, "patch")) {
+                self.patch = true;
+            } else if (eql(u8, flag.head, "m") or eql(u8, flag.head, "magic")) {
+                self.magic = true;
+            } else {
+                try stdout.print("ERROR - unknown argument: {s}", .{flag.head});
+                break;
+            }
+        }
+    }
+};
+
 pub fn readArgsIntoCommand(args: []const u8, allocator: std.mem.Allocator) !Command {
     var command = Command.init(allocator);
 
@@ -29,10 +69,6 @@ pub fn readArgsIntoCommand(args: []const u8, allocator: std.mem.Allocator) !Comm
     var end: usize = 1;
 
     var prevFlag: ?Flag = null;
-
-    // grab shortflags,
-    var shortFlags = std.ArrayList([]u8).init(allocator);
-    defer shortFlags.deinit();
 
     while (end <= args.len) : (end += 1) {
         if (end == args.len or args[end] == ' ') {
@@ -56,15 +92,20 @@ pub fn readArgsIntoCommand(args: []const u8, allocator: std.mem.Allocator) !Comm
 
                 prevFlag = Flag{ .head = slice, .tail = null };
             } else if (isShortFlag) {
-                // Allocate a slice for each value
-                var tempArray = [_]u8{slice};
-                const shortSlice: []u8 = tempArray[0..];
+                if (prevFlag != null) {
+                    try command.flags.append(prevFlag.?);
+                    prevFlag = null;
+                }
 
-                // Store the slice in the ArrayList
-                shortFlags.append(shortSlice) catch {
-                    std.debug.print("Failed to append\n", .{});
-                    return;
-                };
+                for (0..slice.len) |i| {
+                    const tempSlice = slice[i .. i + 1];
+                    const newFlag = Flag{
+                        .head = tempSlice,
+                        .tail = null,
+                    };
+
+                    try command.flags.append(newFlag);
+                }
             } else {
                 if (prevFlag != null and prevFlag.?.tail == null) {
                     prevFlag.?.tail = slice;
@@ -72,12 +113,16 @@ pub fn readArgsIntoCommand(args: []const u8, allocator: std.mem.Allocator) !Comm
                     try command.flags.append(prevFlag.?);
                     prevFlag = null;
                 }
+
+                // else update prevflag
             }
             start = end + 1;
         }
     }
 
-    try printCommand(command);
+    if (prevFlag != null) {
+        try command.flags.append(prevFlag.?);
+    }
 
     return command;
 }
@@ -122,10 +167,10 @@ test "read slice manually into flag object" {
     //try printCommand(command);
 
     //EXPECT
-    try expect(std.mem.eql(u8, command.command.?, "downloads"));
-    try expect(std.mem.eql(u8, command.flags.items[0].head, "dry-run"));
-    try expect(std.mem.eql(u8, command.flags.items[1].head, "type"));
-    try expect(std.mem.eql(u8, command.flags.items[1].tail.?, "hard"));
+    try expect(eql(u8, command.command.?, "downloads"));
+    try expect(eql(u8, command.flags.items[0].head, "dry-run"));
+    try expect(eql(u8, command.flags.items[1].head, "type"));
+    try expect(eql(u8, command.flags.items[1].tail.?, "hard"));
 }
 
 test "read shortflags into flag object" {
@@ -133,11 +178,37 @@ test "read shortflags into flag object" {
     const command: Command = try readArgsIntoCommand(args, test_allocator);
     defer command.deinit();
 
-    try printCommand(command);
+    // try printCommand(command);
 
     // EXPECT
-    try expect(std.mem.eql(u8, command.command.?, "downloads"));
-    try expect(std.mem.eql(u8, command.flags.items[0].head, "d"));
-    try expect(std.mem.eql(u8, command.flags.items[1].head, "h"));
-    try expect(std.mem.eql(u8, command.flags.items[2].head, "v"));
+    try expect(eql(u8, command.command.?, "downloads"));
+    try expect(eql(u8, command.flags.items[0].head, "d"));
+    try expect(eql(u8, command.flags.items[1].head, "h"));
+    try expect(eql(u8, command.flags.items[2].head, "v"));
+}
+
+test "read both shortflags and long ones" {
+    const args: []const u8 = "desktop -sa --force -pe --bruh man";
+    const command: Command = try readArgsIntoCommand(args, test_allocator);
+    defer command.deinit();
+
+    // try printCommand(command);
+
+    try expect(eql(u8, command.command.?, "desktop"));
+    try expect(eql(u8, command.flags.items[0].head, "s"));
+    try expect(eql(u8, command.flags.items[1].head, "a"));
+    try expect(eql(u8, command.flags.items[2].head, "force"));
+}
+
+test "read flags into config" {
+    const args: []const u8 = "downloads -rm";
+    var command: Command = try readArgsIntoCommand(args, test_allocator);
+    defer command.deinit();
+
+    var config = Config{};
+    try config.fromCommand(&command);
+
+    try expect(eql(u8, config.directory, "downloads"));
+    try expect(config.recursive == true);
+    try expect(config.magic == true);
 }
