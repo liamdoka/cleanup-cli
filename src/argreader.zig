@@ -4,8 +4,9 @@ const test_allocator = std.testing.allocator;
 const Allocator = std.mem.Allocator;
 const expect = std.testing.expect;
 const eql = std.mem.eql;
+const cleanup = @import("main.zig");
 
-const Command = struct {
+pub const Command = struct {
     command: ?[]const u8,
     flags: std.ArrayList(Flag),
 
@@ -22,45 +23,6 @@ const Command = struct {
 };
 
 const Flag = struct { head: []const u8, tail: ?[]const u8 };
-
-const Config = struct {
-    dryRun: bool = undefined,
-    recursive: bool = undefined,
-    force: bool = undefined,
-    patch: bool = undefined,
-    magic: bool = undefined,
-
-    directory: []const u8 = undefined,
-
-    fn fromCommand(self: *Config, command: *Command) !void {
-        self.directory = command.command.?;
-
-        for (command.flags.items) |flag| {
-            // Cannot switch on strings -> should probably start from the beginning and add flags as chars
-            //     switch (flag.head) {
-            //         "dry-run", "d" => self.dryRun = true,
-            //         "recursive", "r" => self.recursive = true,
-            //         "force", "f" => self.force = true,
-            //         "patch", "p" => self.patch = true,
-            //         "magic", "m" => self.magic = true,
-            //     }
-            if (eql(u8, flag.head, "d") or eql(u8, flag.head, "dry-run")) {
-                self.dryRun = true;
-            } else if (eql(u8, flag.head, "r") or eql(u8, flag.head, "recursive")) {
-                self.recursive = true;
-            } else if (eql(u8, flag.head, "f") or eql(u8, flag.head, "force")) {
-                self.force = true;
-            } else if (eql(u8, flag.head, "p") or eql(u8, flag.head, "patch")) {
-                self.patch = true;
-            } else if (eql(u8, flag.head, "m") or eql(u8, flag.head, "magic")) {
-                self.magic = true;
-            } else {
-                try stdout.print("ERROR - unknown argument: {s}", .{flag.head});
-                break;
-            }
-        }
-    }
-};
 
 pub fn readArgsIntoCommand(args: []const u8, allocator: std.mem.Allocator) !Command {
     var command = Command.init(allocator);
@@ -205,7 +167,7 @@ test "read flags into config" {
     var command: Command = try readArgsIntoCommand(args, test_allocator);
     defer command.deinit();
 
-    var config = Config{};
+    var config = cleanup.Config{};
     try config.fromCommand(&command);
 
     try expect(eql(u8, config.directory, "downloads"));
