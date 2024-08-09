@@ -134,9 +134,7 @@ test "delete files" {
     try hostDir.deleteDir("dir");
     try hostDir.deleteFile("test.txt");
 
-    hostDir = try hostDir.openDir(".", .{ .iterate = true });
     hostIter = hostDir.iterate();
-
     while (try hostIter.next()) |result| {
         try results.append(result);
     }
@@ -160,11 +158,10 @@ test "rename a file" {
     var hostDir = try cwd.openDir(config.directory, .{ .iterate = true });
     defer hostDir.close();
 
-    var hostIter = hostDir.iterate();
-
     var results = std.ArrayList(std.fs.Dir.Entry).init(allocator);
     defer results.deinit();
 
+    var hostIter = hostDir.iterate();
     while (try hostIter.next()) |result| {
         try results.append(result);
         std.debug.print("{s}  =>  {s}new-name.txt{s}\n", .{ result.name, ansi.UNDERLINE, ansi.RESET });
@@ -178,8 +175,6 @@ test "rename a file" {
     }
 
     results.clearAndFree();
-
-    hostDir = try hostDir.openDir(".", .{ .iterate = true });
     hostIter = hostDir.iterate();
 
     while (try hostIter.next()) |result| {
@@ -192,4 +187,109 @@ test "rename a file" {
     try hostDir.rename("new-name.txt", "file.txt");
 
     std.debug.print("\n", .{});
+}
+
+test "create a folder and move files into it" {
+    const allocator = std.testing.allocator;
+    const args = try allocator.alloc([]const u8, 3);
+    defer allocator.free(args);
+
+    args[0] = "zig-out/bin/cleanup";
+    args[1] = "test-folder";
+    args[2] = "--all";
+
+    const config = try cleanup.Config.fromArgs(args);
+
+    const cwd = std.fs.cwd();
+    var hostDir = try cwd.openDir(config.directory, .{ .iterate = true });
+    defer hostDir.close();
+
+    var hostIter = hostDir.iterate();
+
+    var results = std.ArrayList(std.fs.Dir.Entry).init(allocator);
+    defer results.deinit();
+
+    while (try hostIter.next()) |result| {
+        try results.append(result);
+        std.debug.print("{s}  =>  {s}{s}nested-folder/{s}{s}{s}{s}\n", .{ result.name, ansi.BOLD, ansi.BLUE, ansi.RESET, ansi.UNDERLINE, result.name, ansi.RESET });
+    }
+
+    try std.testing.expect(results.items.len == 1);
+    try std.testing.expect(results.items[0].kind == .file);
+
+    _ = try hostDir.makeDir("nested-folder");
+
+    var nestedDir = try hostDir.openDir("nested-folder", .{ .iterate = true });
+    defer nestedDir.close();
+
+    for (results.items) |result| {
+        try hostDir.copyFile(result.name, nestedDir, result.name, .{});
+        try hostDir.deleteFile(result.name);
+    }
+
+    results.clearAndFree();
+    hostIter = hostDir.iterate();
+    while (try hostIter.next()) |result| {
+        try results.append(result);
+    }
+
+    try std.testing.expect(results.items.len == 1);
+    try std.testing.expect(results.items[0].kind == .directory);
+
+    results.clearAndFree();
+
+    nestedDir = try nestedDir.openDir(".", .{ .iterate = true });
+    var nestedIter = nestedDir.iterate();
+
+    while (try nestedIter.next()) |result| {
+        try results.append(result);
+    }
+
+    try std.testing.expect(results.items.len == 1);
+    try std.testing.expect(results.items[0].kind == .file);
+
+    try nestedDir.deleteFile("file.txt");
+    try hostDir.deleteDir("nested-folder");
+    var newFile = try hostDir.createFile("file.txt", .{});
+    defer newFile.close();
+
+    std.debug.print("\n", .{});
+}
+
+test "use an open dir once a new thing has been added" {
+    const allocator = std.testing.allocator;
+    const args = try allocator.alloc([]const u8, 3);
+    defer allocator.free(args);
+
+    args[0] = "zig-out/bin/cleanup";
+    args[1] = "test-folder";
+    args[2] = "--all";
+
+    const config = try cleanup.Config.fromArgs(args);
+
+    const cwd = std.fs.cwd();
+    var hostDir = try cwd.openDir(config.directory, .{ .iterate = true });
+    var hostIter = hostDir.iterate();
+
+    var results = std.ArrayList(std.fs.Dir.Entry).init(allocator);
+    defer results.deinit();
+
+    while (try hostIter.next()) |result| {
+        try results.append(result);
+    }
+
+    try std.testing.expect(results.items.len == 1);
+    results.clearAndFree();
+
+    const newFile = try hostDir.createFile("new-file.txt", .{});
+    newFile.close();
+
+    hostIter = hostDir.iterate();
+
+    while (try hostIter.next()) |result| {
+        try results.append(result);
+    }
+
+    try std.testing.expect(results.items.len == 2);
+    try hostDir.deleteFile("new-file.txt");
 }
