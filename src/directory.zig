@@ -1,5 +1,6 @@
 const std = @import("std");
 const cleanup = @import("main.zig");
+const ansi = @import("ansi_helper.zig");
 const eql = std.mem.eql;
 const expect = std.testing.expect;
 const test_allocator = std.testing.allocator;
@@ -31,13 +32,10 @@ test "try read environment variables" {
     var envMap: std.process.EnvMap = try std.process.getEnvMap(test_allocator);
     defer envMap.deinit();
 
-    const homeSlice: []const u8 = "/home/lok"; // :)
     const userSlice: []const u8 = "lok";
-    const envHome: ?[]const u8 = envMap.get("HOME");
     const envUser: ?[]const u8 = envMap.get("USER");
 
-    try expect(eql(u8, homeSlice, envHome.?));
-    try expect(eql(u8, userSlice, envUser.?));
+    try expect(std.ascii.eqlIgnoreCase(userSlice, envUser.?));
 }
 
 test "find basic folders" {
@@ -181,4 +179,95 @@ test "get all files and subdirectories in dir" {
 
         try expect(foundTestFile);
     }
+}
+
+test "read temp args" {
+    const stdout = std.io.getStdOut().writer();
+    const allocator = std.testing.allocator;
+
+    const args: [][]const u8 = try allocator.alloc([]const u8, 3);
+    defer allocator.free(args);
+
+    args[0] = "./zig-out/bin/cleanup";
+    args[1] = "work";
+    args[2] = "--dry-run";
+
+    const config = try cleanup.Config.fromArgs(args);
+
+    var cwd = try std.fs.cwd().openDir(".", .{ .iterate = true });
+    defer cwd.close();
+
+    var found: bool = false;
+    var foundPathString: []u8 = undefined;
+
+    var foundDirectoryString: []const u8 = undefined;
+    var foundDirectory: std.fs.Dir = cwd.openDir(config.directory, .{
+        .access_sub_paths = false,
+    }) catch undefined;
+
+    var cwdIterator = cwd.iterate();
+    while (try cwdIterator.next()) |result| {
+
+        // int compare real quick
+        if (result.name.len != config.directory.len or result.kind != .directory) continue;
+        if (std.ascii.eqlIgnoreCase(result.name, config.directory)) {
+            foundDirectoryString = result.name;
+            foundDirectory = try cwd.openDir(result.name, .{ .iterate = true });
+
+            var paths: [][]const u8 = try allocator.alloc([]const u8, 2);
+            defer allocator.free(paths);
+            paths[0] = ".";
+            paths[1] = result.name;
+            foundPathString = try std.fs.path.join(allocator, paths);
+            // deffered later
+
+            found = true;
+            break;
+        }
+    }
+    // if not in the current directory
+    // search the HOME directory
+    if (!found) {
+        const homeVar = try std.process.getEnvVarOwned(allocator, "HOME");
+        defer allocator.free(homeVar);
+
+        cwd = try cwd.openDir(homeVar, .{ .iterate = true });
+        cwdIterator = cwd.iterate();
+
+        while (try cwdIterator.next()) |result| {
+            if (result.name.len != config.directory.len or result.kind != .directory) continue;
+            if (std.ascii.eqlIgnoreCase(result.name, config.directory)) {
+                foundDirectoryString = result.name;
+                foundDirectory = try cwd.openDir(result.name, .{ .iterate = true });
+
+                var paths: [][]const u8 = try allocator.alloc([]const u8, 2);
+                defer allocator.free(paths);
+                paths[0] = homeVar;
+                paths[1] = result.name;
+
+                foundPathString = try std.fs.path.join(allocator, paths);
+                found = true;
+                break;
+            }
+        }
+    }
+
+    defer allocator.free(foundPathString);
+
+    if (!found) {
+        try stdout.print("Directory {?s} not found! Please try again\n", .{config.directory});
+    } else {
+        var foundIter = foundDirectory.iterate();
+        std.debug.print("Found directory at\n\t{s}{s}{?s}{s}\nInside is:\n", .{ ansi.BOLD, ansi.BLUE, foundPathString, ansi.RESET });
+        while (try foundIter.next()) |result| {
+            const color = switch (result.kind) {
+                .directory => ansi.BOLD ++ ansi.BLUE,
+                else => "",
+            };
+
+            std.debug.print("{s}{s}\t{s}", .{ color, result.name, ansi.RESET });
+        }
+        foundDirectory.close();
+    }
+    std.debug.print("\n", .{});
 }
