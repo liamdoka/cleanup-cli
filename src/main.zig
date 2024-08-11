@@ -1,7 +1,7 @@
 const std = @import("std");
 const directory = @import("directory.zig");
 const ansi = @import("ansi_helper.zig");
-const eql = std.mem.eql;
+const FileAction = enum { Nothing, Move, Delete, Rename, TryAgain };
 
 const ConfigError = error{ OutOfMemory, InvalidArgs };
 
@@ -18,7 +18,7 @@ pub const Config = struct {
         var self: Config = Config{};
         self.directory = args[1];
 
-        if (args.len <= 2) return ConfigError.InvalidArgs;
+        if (args.len < 2) return ConfigError.InvalidArgs;
         for (args[2..], 2..) |arg, i| {
             // std.debug.print("{d}: {s}\n", .{ i, arg });
             _ = i;
@@ -60,11 +60,14 @@ pub const Config = struct {
 };
 
 pub fn main() !void {
+    const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
 
     const allocator = std.heap.page_allocator;
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
+
+    std.debug.print("\u{001b}7", .{});
 
     const config = try Config.fromArgs(args);
 
@@ -93,12 +96,13 @@ pub fn main() !void {
             paths[0] = ".";
             paths[1] = result.name;
             foundPathString = try std.fs.path.join(allocator, paths);
-            // deffered later
+            // deffered later trust me bro
 
             found = true;
             break;
         }
     }
+
     // if not in the current directory
     // search the HOME directory
     if (!found) {
@@ -128,12 +132,16 @@ pub fn main() !void {
 
     defer allocator.free(foundPathString);
 
+    var results = std.ArrayList(std.fs.Dir.Entry).init(allocator);
+    defer results.deinit();
+
     if (!found) {
         try stdout.print("Directory {?s} not found! Please try again\n", .{config.directory});
     } else {
         var foundIter = foundDirectory.iterate();
         std.debug.print("Found directory at\n\t{s}{s}{?s}{s}\nInside is:\n", .{ ansi.BOLD, ansi.BLUE, foundPathString, ansi.RESET });
         while (try foundIter.next()) |result| {
+            try results.append(result);
             const color = switch (result.kind) {
                 .directory => ansi.BOLD ++ ansi.BLUE,
                 else => "",
@@ -141,6 +149,99 @@ pub fn main() !void {
 
             std.debug.print("{s}{s}\t{s}", .{ color, result.name, ansi.RESET });
         }
+        std.debug.print("\n", .{});
     }
-    std.debug.print("\n", .{});
+
+    for (results.items) |result| {
+        std.debug.print("\u{001b}[s", .{});
+
+        const actionChar: u8 = while (true) {
+            try stdout.print("\t{s}\nWhat to do with this file ['d','r','m','n','?']: ", .{result.name});
+
+            const input = try stdin.readUntilDelimiterOrEofAlloc(allocator, '\n', 12) orelse "";
+            defer allocator.free(input);
+            if (input.len == 1) {
+                break input[0];
+            } else {
+                try stdout.print("invalid action: {s}, please try again\n", .{input});
+            }
+        };
+
+        const action = mapCharToFileAction(actionChar);
+        try handleFile(foundDirectory, result, action);
+    }
+
+    std.debug.print("\u{001b}8\u{001b}[0J\n", .{});
+}
+
+pub fn handleFile(cwd: std.fs.Dir, file: std.fs.Dir.Entry, action: FileAction) !void {
+    const stdin = std.io.getStdIn().reader();
+    const stdout = std.io.getStdOut().writer();
+    const allocator = std.heap.page_allocator;
+
+    switch (action) {
+        .Nothing => return,
+        .Delete => {
+            const color = if (file.kind == .directory) ansi.BLUE ++ ansi.BOLD else "";
+
+            while (true) {
+                try stdout.print("{s}{s}{s} => {s}{s}{s}{s}\nDelete the file for real? ['y','n']: ", .{
+                    // zig fmt:off
+                    color,      file.name,          ansi.RESET,
+                    ansi.RED,   ansi.STRIKETHROUGH, file.name,
+                    ansi.RESET,
+                });
+                const response = stdin.readUntilDelimiterAlloc(allocator, '\n', 128) catch "";
+
+                if (response.len == 1) {
+                    switch (response[0]) {
+                        'y' => {
+                            if (file.kind == .file) {
+                                try cwd.deleteFile(file.name);
+                                try stdout.print("File deleted\n", .{});
+                            } else if (file.kind == .directory) {
+                                try cwd.deleteDir(file.name);
+                                try stdout.print("Directory deleted\n", .{});
+                            }
+                            break;
+                        },
+                        'n' => {
+                            try stdout.print("File not deleted\n", .{});
+                            break;
+                        },
+                        else => continue,
+                    }
+                }
+                try stdout.print("Invalid file name, try again\n", .{});
+            }
+        },
+        .Move => {
+            try stdout.print("not implemented sorry", .{});
+            return;
+        },
+        .Rename => {
+            try stdout.print("Enter a new name for the file:\n", .{});
+            while (true) {
+                try stdout.print("{s}  =>  ", .{file.name});
+                const newName = stdin.readUntilDelimiterAlloc(allocator, '\n', 128) catch "";
+                if (newName.len > 0) {
+                    try cwd.rename(file.name, newName);
+                    break;
+                } else {
+                    try stdout.print("Invalid file name, try again\n", .{});
+                }
+            }
+        },
+        else => return,
+    }
+}
+
+pub fn mapCharToFileAction(char: u8) FileAction {
+    return switch (char) {
+        'r' => .Rename,
+        'd' => .Delete,
+        'm' => .Move,
+        'n' => .Nothing,
+        else => .TryAgain,
+    };
 }

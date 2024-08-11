@@ -1,15 +1,21 @@
 const std = @import("std");
 const ansi = @import("ansi_helper.zig");
 const cleanup = @import("main.zig");
-const FileAction = enum { Nothing, Move, Delete, Rename, TryAgain };
 
 const stdout = std.io.getStdOut().writer();
 const stdin = std.io.getStdOut().reader();
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
-    const args = std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    // const args = std.process.argsAlloc(allocator);
+    // defer std.process.argsFree(allocator, args);
+
+    const args: [][]const u8 = try allocator.alloc([]const u8, 3);
+    defer allocator.free(args);
+
+    args[0] = "./zig-out/bin/cleanup";
+    args[1] = "test-folder";
+    args[2] = "--all";
 
     const config = try cleanup.Config.fromArgs(args);
 
@@ -19,54 +25,29 @@ pub fn main() !void {
 
     var targetDirIter = targetDir.iterate();
     while (try targetDirIter.next()) |result| {
-        try stdout.write("\x1B[2J\x1B[H");
-
         const prompt = try std.fmt.allocPrint(allocator, "Would you like to handle\n\t{s}\n\n['d','r','m','n','?']: ", .{result.name});
-        try stdout.write(prompt);
+        _ = try stdout.write(prompt);
 
-        const input: [16]u8 = undefined;
-        const inputLen = try stdin.read(input);
+        const buf: []u8 = undefined;
+        if (try stdin.readUntilDelimiterOrEof(buf[0..], '\n')) |input| {
+            if (input.len == 1) {
+                const action: cleanup.FileAction = switch (input[0]) {
+                    'r' => .Rename,
+                    'd' => .Delete,
+                    'm' => .Move,
+                    'n' => .Nothing,
+                    else => .TryAgain,
+                };
 
-        if (inputLen != 1) {
-            const action: FileAction = switch (input[0]) {
-                'r' => FileAction.Rename,
-                'd' => FileAction.Delete,
-                'm' => FileAction.Move,
-                'n' => FileAction.Nothing,
-                else => FileAction.TryAgain,
-            };
-
-            if (action != .TryAgain) {
-                try handleFile(cwd, result.name, action);
-            } else {}
+                if (action != .TryAgain) {
+                    try cleanup.handleFile(cwd, result.name, action);
+                } else {}
+            }
         }
     }
 
     try stdout.write("\x1B[2J\x1B[H");
     try stdout.write("Cleanup completed :)\n");
-}
-
-pub fn handleFile(cwd: std.fs.Dir, file: []const u8, action: FileAction) !void {
-    switch (action) {
-        .Nothing => return,
-        .Delete => try cwd.deleteFile(file),
-        .Move => {
-            // prompt for new destination
-            const buf: [256]u8 = undefined;
-            const newPath = try stdin.read(buf);
-            // try open dir
-            // try cwd.copyFile(source_path: []const u8, dest_dir: Dir, dest_path: []const u8, options: CopyFileOptions)
-
-            // try delete original file
-            _ = newPath;
-        },
-        .Rename => {
-            //prompt for new name
-            const buf: [256]u8 = undefined;
-            const newName = try stdin.read(buf);
-            _ = try cwd.rename(file, newName);
-        },
-    }
 }
 
 test "delete files" {
@@ -118,11 +99,10 @@ test "delete files" {
             offset[i] = ' ';
         }
 
-        std.debug.print("{s}{s}{s}  =>  {s}{s}{s}{s}\n", .{
+        std.debug.print("{s}{s}{s}{s}  =>  {s}{s}{s}{s}\n", .{
             // zig fmt:off
-            offset,     color,              result.name,
-            ansi.RED,   ansi.STRIKETHROUGH, result.name,
-            ansi.RESET,
+            offset,   color,              result.name, ansi.RESET,
+            ansi.RED, ansi.STRIKETHROUGH, result.name, ansi.RESET,
         });
     }
 
@@ -211,7 +191,16 @@ test "create a folder and move files into it" {
 
     while (try hostIter.next()) |result| {
         try results.append(result);
-        std.debug.print("{s}  =>  {s}{s}nested-folder/{s}{s}{s}{s}\n", .{ result.name, ansi.BOLD, ansi.BLUE, ansi.RESET, ansi.UNDERLINE, result.name, ansi.RESET });
+        std.debug.print("{s}  =>  {s}{s}nested-folder/{s}{s}{s}{s}\n", .{
+            // zig fmt:off
+            result.name,
+            ansi.BOLD,
+            ansi.BLUE,
+            ansi.RESET,
+            ansi.UNDERLINE,
+            result.name,
+            ansi.RESET,
+        });
     }
 
     try std.testing.expect(results.items.len == 1);
