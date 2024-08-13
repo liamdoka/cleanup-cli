@@ -139,39 +139,34 @@ pub fn main() !void {
         try stdout.print("Directory {?s} not found! Please try again\n", .{config.directory});
     } else {
         var foundIter = foundDirectory.iterate();
-        std.debug.print("Found directory at\n\t{s}{s}{?s}{s}\nInside is:\n", .{ ansi.BOLD, ansi.BLUE, foundPathString, ansi.RESET });
+        std.debug.print("Found directory at {s}{s}{s}{s}\n", .{ ansi.BOLD, ansi.BLUE, foundPathString, ansi.RESET });
         while (try foundIter.next()) |result| {
             try results.append(result);
-            const color = switch (result.kind) {
-                .directory => ansi.BOLD ++ ansi.BLUE,
-                else => "",
-            };
-
-            std.debug.print("{s}{s}\t{s}", .{ color, result.name, ansi.RESET });
         }
-        std.debug.print("\n", .{});
     }
 
     for (results.items) |result| {
-        std.debug.print("\u{001b}[s", .{});
+        std.debug.print("{s}", .{ansi.SAVE_CURSOR});
 
         const actionChar: u8 = while (true) {
-            try stdout.print("\t{s}\nWhat to do with this file ['d','r','m','n','?']: ", .{result.name});
+            try stdout.print("\n\t\"{s}\"\n\nWhat to do with this file ['d','r','m','n','?']: ", .{result.name});
 
             const input = try stdin.readUntilDelimiterOrEofAlloc(allocator, '\n', 12) orelse "";
             defer allocator.free(input);
             if (input.len == 1) {
                 break input[0];
             } else {
-                try stdout.print("invalid action: {s}, please try again\n", .{input});
+                try stdout.print("invalid action: {s}\"{s}\"{s}, please try again\n", .{ ansi.BOLD, input, ansi.RESET });
             }
         };
 
         const action = mapCharToFileAction(actionChar);
         try handleFile(foundDirectory, result, action);
+
+        std.debug.print("{s}{s}", .{ ansi.RESTORE_CURSOR, ansi.CLEAR_BELOW_CURSOR });
     }
 
-    std.debug.print("\u{001b}8\u{001b}[0J\n", .{});
+    std.debug.print("\u{001b}[1F\u{001b}[0KCleaned {s}{s}{s}{s} successfully!\n", .{ ansi.BOLD, ansi.BLUE, foundPathString, ansi.RESET });
 }
 
 pub fn handleFile(cwd: std.fs.Dir, file: std.fs.Dir.Entry, action: FileAction) !void {
@@ -182,10 +177,12 @@ pub fn handleFile(cwd: std.fs.Dir, file: std.fs.Dir.Entry, action: FileAction) !
     switch (action) {
         .Nothing => return,
         .Delete => {
+            std.debug.print("{s}{s}", .{ ansi.RESTORE_CURSOR, ansi.CLEAR_BELOW_CURSOR });
+
             const color = if (file.kind == .directory) ansi.BLUE ++ ansi.BOLD else "";
 
             while (true) {
-                try stdout.print("{s}{s}{s} => {s}{s}{s}{s}\nDelete the file for real? ['y','n']: ", .{
+                try stdout.print("\n\t{s}\"{s}\"{s}\n\t\t=> {s}{s}{s}{s}\n\nDelete the file for real? ['y','n']: ", .{
                     // zig fmt:off
                     color,      file.name,          ansi.RESET,
                     ansi.RED,   ansi.STRIKETHROUGH, file.name,
@@ -220,9 +217,10 @@ pub fn handleFile(cwd: std.fs.Dir, file: std.fs.Dir.Entry, action: FileAction) !
             return;
         },
         .Rename => {
-            try stdout.print("Enter a new name for the file:\n", .{});
+            std.debug.print("{s}{s}", .{ ansi.RESTORE_CURSOR, ansi.CLEAR_BELOW_CURSOR });
+
             while (true) {
-                try stdout.print("{s}  =>  ", .{file.name});
+                try stdout.print("\n\t\"{s}\"\n\t\t=>  ", .{file.name});
                 const newName = stdin.readUntilDelimiterAlloc(allocator, '\n', 128) catch "";
                 if (newName.len > 0) {
                     try cwd.rename(file.name, newName);
