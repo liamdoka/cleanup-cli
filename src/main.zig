@@ -1,8 +1,8 @@
 const std = @import("std");
 const directory = @import("directory.zig");
 const ansi = @import("ansi_helper.zig");
-const FileAction = enum { Nothing, Move, Delete, Rename, TryAgain };
 
+const FileAction = enum { Nothing, Move, Delete, Rename, TryAgain };
 const ConfigError = error{ OutOfMemory, InvalidArgs };
 
 pub const Config = struct {
@@ -12,17 +12,12 @@ pub const Config = struct {
     magic: bool = false,
     dryRun: bool = false,
     recursive: bool = false,
-    directory: []const u8 = undefined,
+    directory: []const u8 = ".",
 
     pub fn fromArgs(args: [][]const u8) !Config {
         var self: Config = Config{};
-        self.directory = args[1];
 
-        if (args.len < 2) return ConfigError.InvalidArgs;
-        for (args[2..], 2..) |arg, i| {
-            // std.debug.print("{d}: {s}\n", .{ i, arg });
-            _ = i;
-
+        for (args[1..], 1..) |arg, i| {
             if (std.ascii.startsWithIgnoreCase(arg, "--")) {
                 if (std.ascii.eqlIgnoreCase(arg[2..], "dry-run")) {
                     self.dryRun = true;
@@ -53,6 +48,12 @@ pub const Config = struct {
                         },
                     }
                 }
+            } else {
+                if (i == 1) {
+                    self.directory = arg;
+                } else {
+                    return ConfigError.InvalidArgs;
+                }
             }
         }
         return self;
@@ -67,7 +68,7 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    std.debug.print("\u{001b}7", .{});
+    try stdout.print("\u{001b}7", .{});
 
     const config = try Config.fromArgs(args);
 
@@ -75,31 +76,32 @@ pub fn main() !void {
     defer cwd.close();
 
     var found: bool = false;
-    var foundPathString: []u8 = undefined;
+    var foundPathString: []const u8 = "";
+    var foundDirectory: ?std.fs.Dir = cwd.openDir(config.directory, .{ .iterate = true }) catch null;
+    defer foundDirectory.?.close();
 
-    var foundDirectoryString: []const u8 = undefined;
-    var foundDirectory: std.fs.Dir = cwd.openDir(config.directory, .{
-        .access_sub_paths = false,
-    }) catch undefined;
+    if (foundDirectory != null) {
+        foundPathString = config.directory;
+        found = true;
+    }
 
-    var cwdIterator = cwd.iterate();
-    while (try cwdIterator.next()) |result| {
+    if (!found) {
+        var cwdIterator = cwd.iterate();
+        while (try cwdIterator.next()) |result| {
+            // int compare real quick
+            if (result.name.len != config.directory.len or result.kind != .directory) continue;
+            if (std.ascii.eqlIgnoreCase(result.name, config.directory)) {
+                foundDirectory = try cwd.openDir(result.name, .{ .iterate = true });
 
-        // int compare real quick
-        if (result.name.len != config.directory.len or result.kind != .directory) continue;
-        if (std.ascii.eqlIgnoreCase(result.name, config.directory)) {
-            foundDirectoryString = result.name;
-            foundDirectory = try cwd.openDir(result.name, .{ .iterate = true });
+                var paths: [][]const u8 = try allocator.alloc([]const u8, 2);
+                defer allocator.free(paths);
+                paths[0] = ".";
+                paths[1] = result.name;
+                foundPathString = try std.fs.path.join(allocator, paths);
 
-            var paths: [][]const u8 = try allocator.alloc([]const u8, 2);
-            defer allocator.free(paths);
-            paths[0] = ".";
-            paths[1] = result.name;
-            foundPathString = try std.fs.path.join(allocator, paths);
-            // deffered later trust me bro
-
-            found = true;
-            break;
+                found = true;
+                break;
+            }
         }
     }
 
@@ -110,12 +112,11 @@ pub fn main() !void {
         defer allocator.free(homeVar);
 
         cwd = try cwd.openDir(homeVar, .{ .iterate = true });
-        cwdIterator = cwd.iterate();
+        var cwdIterator = cwd.iterate();
 
         while (try cwdIterator.next()) |result| {
             if (result.name.len != config.directory.len or result.kind != .directory) continue;
             if (std.ascii.eqlIgnoreCase(result.name, config.directory)) {
-                foundDirectoryString = result.name;
                 foundDirectory = try cwd.openDir(result.name, .{ .iterate = true });
 
                 var paths: [][]const u8 = try allocator.alloc([]const u8, 2);
@@ -124,13 +125,12 @@ pub fn main() !void {
                 paths[1] = result.name;
 
                 foundPathString = try std.fs.path.join(allocator, paths);
+
                 found = true;
                 break;
             }
         }
     }
-
-    defer allocator.free(foundPathString);
 
     var results = std.ArrayList(std.fs.Dir.Entry).init(allocator);
     defer results.deinit();
@@ -138,18 +138,18 @@ pub fn main() !void {
     if (!found) {
         try stdout.print("Directory {?s} not found! Please try again\n", .{config.directory});
     } else {
-        var foundIter = foundDirectory.iterate();
-        std.debug.print("Found directory at {s}{s}{s}{s}\n", .{ ansi.BOLD, ansi.BLUE, foundPathString, ansi.RESET });
+        var foundIter = foundDirectory.?.iterate();
+        try stdout.print("Found directory at {s}{s}{s}{s}\n", .{ ansi.BOLD, ansi.BLUE, foundPathString, ansi.RESET });
         while (try foundIter.next()) |result| {
             try results.append(result);
         }
     }
 
     for (results.items) |result| {
-        std.debug.print("{s}", .{ansi.SAVE_CURSOR});
+        try stdout.print("{s}", .{ansi.SAVE_CURSOR});
 
         const actionChar: u8 = while (true) {
-            try stdout.print("\n\t\"{s}\"\n\nWhat to do with this file ['d','r','m','n','?']: ", .{result.name});
+            try stdout.print("\n\t\"{s}\"\n\nWhat to do with this file ['d','r','n','?']: ", .{result.name});
 
             const input = try stdin.readUntilDelimiterOrEofAlloc(allocator, '\n', 12) orelse "";
             defer allocator.free(input);
@@ -161,12 +161,13 @@ pub fn main() !void {
         };
 
         const action = mapCharToFileAction(actionChar);
-        try handleFile(foundDirectory, result, action);
+        try handleFile(foundDirectory.?, result, action);
 
-        std.debug.print("{s}{s}", .{ ansi.RESTORE_CURSOR, ansi.CLEAR_BELOW_CURSOR });
+        try stdout.print("{s}{s}", .{ ansi.RESTORE_CURSOR, ansi.CLEAR_BELOW_CURSOR });
     }
 
-    std.debug.print("\u{001b}[1F\u{001b}[0KCleaned {s}{s}{s}{s} successfully!\n", .{ ansi.BOLD, ansi.BLUE, foundPathString, ansi.RESET });
+    try stdout.print("\u{001b}[1F\u{001b}[0KCleaned {s}{s}{s}{s} successfully!\n", .{ ansi.BOLD, ansi.BLUE, foundPathString, ansi.RESET });
+    return;
 }
 
 pub fn handleFile(cwd: std.fs.Dir, file: std.fs.Dir.Entry, action: FileAction) !void {
@@ -177,7 +178,7 @@ pub fn handleFile(cwd: std.fs.Dir, file: std.fs.Dir.Entry, action: FileAction) !
     switch (action) {
         .Nothing => return,
         .Delete => {
-            std.debug.print("{s}{s}", .{ ansi.RESTORE_CURSOR, ansi.CLEAR_BELOW_CURSOR });
+            try stdout.print("{s}{s}", .{ ansi.RESTORE_CURSOR, ansi.CLEAR_BELOW_CURSOR });
 
             const color = if (file.kind == .directory) ansi.BLUE ++ ansi.BOLD else "";
 
@@ -189,6 +190,7 @@ pub fn handleFile(cwd: std.fs.Dir, file: std.fs.Dir.Entry, action: FileAction) !
                     ansi.RESET,
                 });
                 const response = stdin.readUntilDelimiterAlloc(allocator, '\n', 128) catch "";
+                defer allocator.free(response);
 
                 if (response.len == 1) {
                     switch (response[0]) {
@@ -222,6 +224,8 @@ pub fn handleFile(cwd: std.fs.Dir, file: std.fs.Dir.Entry, action: FileAction) !
             while (true) {
                 try stdout.print("\n\t\"{s}\"\n\t\t=>  ", .{file.name});
                 const newName = stdin.readUntilDelimiterAlloc(allocator, '\n', 128) catch "";
+                defer allocator.free(newName);
+
                 if (newName.len > 0) {
                     try cwd.rename(file.name, newName);
                     break;
