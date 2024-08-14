@@ -7,11 +7,7 @@ const ConfigError = error{ OutOfMemory, InvalidArgs };
 
 pub const Config = struct {
     all: bool = false,
-    force: bool = false,
-    patch: bool = false,
-    magic: bool = false,
-    dryRun: bool = false,
-    recursive: bool = false,
+    delete: bool = false,
     directory: []const u8 = ".",
 
     pub fn fromArgs(args: [][]const u8) !Config {
@@ -19,30 +15,18 @@ pub const Config = struct {
 
         for (args[1..], 1..) |arg, i| {
             if (std.ascii.startsWithIgnoreCase(arg, "--")) {
-                if (std.ascii.eqlIgnoreCase(arg[2..], "dry-run")) {
-                    self.dryRun = true;
-                } else if (std.ascii.eqlIgnoreCase(arg[2..], "recursive")) {
-                    self.recursive = true;
-                } else if (std.ascii.eqlIgnoreCase(arg[2..], "force")) {
-                    self.force = true;
-                } else if (std.ascii.eqlIgnoreCase(arg[2..], "patch")) {
-                    self.patch = true;
-                } else if (std.ascii.eqlIgnoreCase(arg[2..], "magic")) {
-                    self.force = true;
-                } else if (std.ascii.eqlIgnoreCase(arg[2..], "all")) {
+                if (std.ascii.eqlIgnoreCase(arg[2..], "all")) {
                     self.all = true;
+                } else if (std.ascii.eqlIgnoreCase(arg[2..], "delete")) {
+                    self.delete = true;
                 } else {
                     std.debug.print("Unknown arg: {s}\n", .{arg});
                 }
             } else if (std.ascii.startsWithIgnoreCase(arg, "-")) {
                 for (arg[1..]) |flag| {
                     switch (flag) {
-                        'd' => self.dryRun = true,
-                        'r' => self.recursive = true,
-                        'f' => self.force = true,
-                        'p' => self.patch = true,
-                        'm' => self.magic = true,
                         'a' => self.all = true,
+                        'd' => self.delete = true,
                         else => {
                             std.debug.print("Unknown flag: {c}\n", .{flag});
                         },
@@ -78,7 +62,6 @@ pub fn main() !void {
     var found: bool = false;
     var foundPathString: []const u8 = "";
     var foundDirectory: ?std.fs.Dir = cwd.openDir(config.directory, .{ .iterate = true }) catch null;
-    defer foundDirectory.?.close();
 
     if (foundDirectory != null) {
         foundPathString = config.directory;
@@ -136,11 +119,16 @@ pub fn main() !void {
     defer results.deinit();
 
     if (!found) {
-        try stdout.print("Directory {?s} not found! Please try again\n", .{config.directory});
+        try stdout.print("Directory {s}{s}{s}{s} not found! Please try again\n", .{
+            // zig fmt:off
+            ansi.BLUE, ansi.BOLD, config.directory, ansi.RESET,
+        });
+        return;
     } else {
         var foundIter = foundDirectory.?.iterate();
         try stdout.print("Found directory at {s}{s}{s}{s}\n", .{ ansi.BOLD, ansi.BLUE, foundPathString, ansi.RESET });
         while (try foundIter.next()) |result| {
+            if (config.all == false and result.kind == .directory) continue;
             try results.append(result);
         }
     }
@@ -148,25 +136,41 @@ pub fn main() !void {
     for (results.items) |result| {
         try stdout.print("{s}", .{ansi.SAVE_CURSOR});
 
-        const actionChar: u8 = while (true) {
-            try stdout.print("\n\t\"{s}\"\n\nWhat to do with this file ['d','r','n','?']: ", .{result.name});
+        const style = if (result.kind == .directory) ansi.BOLD ++ ansi.BLUE else "";
+        const verb = if (result.kind == .directory) "folder" else "file";
+
+        const action: FileAction = while (true) {
+            if (config.delete) break .Delete;
+
+            try stdout.print("\n\t\"{s}{s}{s}\"\n\n{s}{s}What to do with this {s}? [d,r,n,?]:{s} ", .{
+                // zig fmt:off
+                style,      result.name,    ansi.RESET,
+                ansi.BOLD,  ansi.DARK_BLUE, verb,
+                ansi.RESET,
+            });
 
             const input = try stdin.readUntilDelimiterOrEofAlloc(allocator, '\n', 12) orelse "";
             defer allocator.free(input);
             if (input.len == 1) {
-                break input[0];
-            } else {
-                try stdout.print("invalid action: {s}\"{s}\"{s}, please try again\n", .{ ansi.BOLD, input, ansi.RESET });
+                const actionFromChar = mapCharToFileAction(input[0]);
+                if (actionFromChar != .TryAgain) {
+                    break actionFromChar;
+                }
             }
+
+            try stdout.print("invalid action: {s}\"{s}\"{s}, please try again\n", .{ ansi.BOLD, input, ansi.RESET });
         };
 
-        const action = mapCharToFileAction(actionChar);
         try handleFile(foundDirectory.?, result, action);
-
         try stdout.print("{s}{s}", .{ ansi.RESTORE_CURSOR, ansi.CLEAR_BELOW_CURSOR });
     }
 
     try stdout.print("\u{001b}[1F\u{001b}[0KCleaned {s}{s}{s}{s} successfully!\n", .{ ansi.BOLD, ansi.BLUE, foundPathString, ansi.RESET });
+
+    if (foundDirectory != null) {
+        foundDirectory.?.close();
+    }
+
     return;
 }
 
@@ -183,10 +187,11 @@ pub fn handleFile(cwd: std.fs.Dir, file: std.fs.Dir.Entry, action: FileAction) !
             const color = if (file.kind == .directory) ansi.BLUE ++ ansi.BOLD else "";
 
             while (true) {
-                try stdout.print("\n\t{s}\"{s}\"{s}\n\t\t=> {s}{s}{s}{s}\n\nDelete the file for real? ['y','n']: ", .{
+                try stdout.print("\n\t{s}\"{s}\"{s}\n\t\t=> {s}{s}{s}{s}\n\n{s}{s}Delete the file for real? [y,n]: {s}", .{
                     // zig fmt:off
                     color,      file.name,          ansi.RESET,
                     ansi.RED,   ansi.STRIKETHROUGH, file.name,
+                    ansi.RESET, ansi.DARK_BLUE,     ansi.BOLD,
                     ansi.RESET,
                 });
                 const response = stdin.readUntilDelimiterAlloc(allocator, '\n', 128) catch "";
